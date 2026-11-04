@@ -7,15 +7,13 @@ import threading
 from typing import Dict, Any, Optional
 from services.content_generator import ComprehensiveContentGenerator
 from services.file_processor import FileProcessor
-from supabase import create_client
-from config import get_settings
-
-settings = get_settings()
-supabase = create_client(settings.supabase_url, settings.supabase_key)
+from database import supabase
 
 class BackgroundTaskManager:
     def __init__(self):
         self.tasks = {}
+        self._threads = {}
+        self._tasks_lock = threading.Lock()
         # Use lazy loading for heavy services
         self._content_generator: Optional[ComprehensiveContentGenerator] = None
         self._file_processor: Optional[FileProcessor] = None
@@ -37,23 +35,29 @@ class BackgroundTaskManager:
         return self._file_processor
     
     def start_paper_generation(self, paper_id: str) -> str:
-        """Start background paper generation task"""
+        """Start background paper generation without racing task registration."""
         task_id = f"generate_paper_{paper_id}"
-        
-        # Start the task in a separate thread
-        thread = threading.Thread(
-            target=self._generate_complete_paper_background,
-            args=(paper_id, task_id)
-        )
-        thread.daemon = True
-        thread.start()
-        
-        self.tasks[task_id] = {
-            "status": "started",
-            "paper_id": paper_id,
-            "thread": thread
-        }
-        
+
+        with self._tasks_lock:
+            existing_thread = self._threads.get(task_id)
+            if existing_thread and existing_thread.is_alive():
+                return task_id
+
+            # Register serializable task state before starting the worker. The
+            # worker can finish quickly, so registering after start is unsafe.
+            self.tasks[task_id] = {
+                "status": "started",
+                "paper_id": paper_id
+            }
+            thread = threading.Thread(
+                target=self._generate_complete_paper_background,
+                args=(paper_id, task_id),
+                name=task_id
+            )
+            thread.daemon = True
+            self._threads[task_id] = thread
+            thread.start()
+
         return task_id
     
     def _generate_complete_paper_background(self, paper_id: str, task_id: str):
@@ -275,8 +279,8 @@ class BackgroundTaskManager:
                 self.tasks[task_id]["error"] = str(e)
     
     def get_task_status(self, task_id: str) -> Dict[str, Any]:
-        """Get status of a background task"""
-        return self.tasks.get(task_id, {"status": "not_found"})
+        """Get JSON-serializable status of a background task."""
+        return dict(self.tasks.get(task_id, {"status": "not_found"}))
 
 # Global instance
 background_task_manager = BackgroundTaskManager()
