@@ -70,7 +70,10 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
--- Triggers for updated_at
+-- Triggers for updated_at (drop first so this schema can be safely re-run)
+DROP TRIGGER IF EXISTS update_papers_updated_at ON papers;
+DROP TRIGGER IF EXISTS update_sections_updated_at ON sections;
+
 CREATE TRIGGER update_papers_updated_at BEFORE UPDATE ON papers
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
