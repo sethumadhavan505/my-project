@@ -1,30 +1,14 @@
 #!/bin/bash
 set -e
 
-# Wait for database to be ready
-echo "Waiting for database to be ready..."
-while ! nc -z database 5432; do
-  sleep 1
-done
-echo "Database is ready!"
+# Validate hosted Supabase credentials before starting the API.
+# This application uses the Supabase HTTP API, not a local PostgreSQL host.
+echo "Checking Supabase configuration..."
+python -c "from database import supabase; print('Supabase client configured successfully.')"
 
-# Run database migrations if needed
-echo "Running database setup..."
-python -c "
-import sys
-sys.path.append('/app')
-from database import supabase
-print('Database connection test passed!')
-"
+# Ensure the embedding model is cached before the API starts.
+echo "Checking embedding model cache..."
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2'); print('Embedding model is ready.')"
 
-# Download and cache the embedding model
-echo "Downloading embedding model..."
-python -c "
-from sentence_transformers import SentenceTransformer
-model = SentenceTransformer('all-MiniLM-L6-v2')
-print('Embedding model cached successfully!')
-"
-
-# Start the application
 echo "Starting IEEE Paper Generator Backend..."
 exec "$@"
