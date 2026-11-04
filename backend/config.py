@@ -5,7 +5,7 @@ import os
 class Settings(BaseSettings):
     # Supabase (can be local PostgreSQL or external Supabase)
     supabase_url: str
-    supabase_key: str = ""  # Optional for local PostgreSQL
+    supabase_key: str
     
     # Gemini API (for text generation only)
     gemini_api_key: str
@@ -43,7 +43,12 @@ class Settings(BaseSettings):
         
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Ensure upload directory exists
+        if not self.supabase_url.startswith(("https://", "http://")):
+            raise ValueError("SUPABASE_URL must be a Supabase HTTP(S) URL, not a PostgreSQL DSN.")
+        if not self.supabase_key.strip():
+            raise ValueError("SUPABASE_KEY is required.")
+        if not self.gemini_api_key.strip():
+            raise ValueError("GEMINI_API_KEY is required.")
         os.makedirs(self.upload_dir, exist_ok=True)
 
 @lru_cache()
