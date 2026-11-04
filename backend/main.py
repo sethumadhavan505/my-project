@@ -191,7 +191,8 @@ async def upload_files(paper_id: str, files: List[UploadFile] = File(...)):
         
         for file in files:
             # Validate file type
-            file_ext = Path(file.filename).suffix.lower()
+            raw_filename = (file.filename or "reference").replace("\\", "/").split("/")[-1]
+            file_ext = Path(raw_filename).suffix.lower()
             if file_ext not in settings.allowed_extensions:
                 raise HTTPException(
                     status_code=400, 
@@ -199,7 +200,7 @@ async def upload_files(paper_id: str, files: List[UploadFile] = File(...)):
                 )
             
             # Use a basename only; never trust a client-supplied path.
-            original_name = (file.filename or "reference").replace("\\", "/").split("/")[-1]
+            original_name = raw_filename
             file_id = str(uuid.uuid4())
             filename = f"{file_id}_{original_name}"
             file_path = Path(settings.upload_dir) / filename
