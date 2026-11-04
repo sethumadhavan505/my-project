@@ -30,14 +30,14 @@ def check_requirements():
 
 def check_env_file():
     """Check if .env file exists and has required variables"""
-    env_file = Path(".env")
-    
-    if not env_file.exists():
-        print("✗ .env file not found")
-        print("Please create a .env file based on .env.example")
+    required = ("SUPABASE_URL", "SUPABASE_KEY", "GEMINI_API_KEY")
+    missing = [name for name in required if not os.getenv(name)]
+    if missing:
+        print("✗ Missing required environment variables: " + ", ".join(missing))
+        print("Set them in backend/.env or in your deployment environment.")
         return False
-    
-    print("✓ .env file found")
+
+    print("✓ Required environment variables found")
     return True
 
 def create_upload_dir():
