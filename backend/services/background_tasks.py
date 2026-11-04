@@ -7,11 +7,7 @@ import threading
 from typing import Dict, Any, Optional
 from services.content_generator import ComprehensiveContentGenerator
 from services.file_processor import FileProcessor
-from supabase import create_client
-from config import get_settings
-
-settings = get_settings()
-supabase = create_client(settings.supabase_url, settings.supabase_key)
+from database import supabase
 
 class BackgroundTaskManager:
     def __init__(self):
