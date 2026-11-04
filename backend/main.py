@@ -64,6 +64,8 @@ async def startup_event():
             
             _embedding_model_ready = True
             print("✅ Embedding model preloaded and ready!")
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"⚠️  Warning: Could not preload embedding model: {e}")
             print("   Model will load on first use instead.")
@@ -118,6 +120,8 @@ async def list_papers():
         result = supabase.table("papers").select("*").order("created_at", desc=True).execute()
         
         return [PaperResponse(**paper) for paper in result.data]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -138,6 +142,8 @@ async def create_paper(paper: PaperCreate):
             return PaperResponse(**result.data[0])
         else:
             raise HTTPException(status_code=400, detail="Failed to create paper")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -151,6 +157,8 @@ async def get_paper(paper_id: str):
             return PaperResponse(**result.data[0])
         else:
             raise HTTPException(status_code=404, detail="Paper not found")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -166,6 +174,8 @@ async def get_files(paper_id: str):
             storage_url=file["storage_url"],
             file_size=file["file_size"]
         ) for file in result.data]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -173,6 +183,10 @@ async def get_files(paper_id: str):
 async def upload_files(paper_id: str, files: List[UploadFile] = File(...)):
     """Upload reference files for a paper"""
     try:
+        paper_result = supabase.table("papers").select("paper_id").eq("paper_id", paper_id).execute()
+        if not paper_result.data:
+            raise HTTPException(status_code=404, detail="Paper not found")
+
         uploaded_files = []
         
         for file in files:
@@ -184,35 +198,47 @@ async def upload_files(paper_id: str, files: List[UploadFile] = File(...)):
                     detail=f"File type {file_ext} not allowed"
                 )
             
-            # Save file
+            # Use a basename only; never trust a client-supplied path.
+            original_name = (file.filename or "reference").replace("\\", "/").split("/")[-1]
             file_id = str(uuid.uuid4())
-            filename = f"{file_id}_{file.filename}"
+            filename = f"{file_id}_{original_name}"
             file_path = Path(settings.upload_dir) / filename
-            
-            with open(file_path, "wb") as buffer:
-                content = await file.read()
-                if len(content) > settings.max_file_size:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="File too large"
-                    )
-                buffer.write(content)
-            
-            # Store file info in database first (quick response)
-            file_result = supabase.table("files").insert({
-                "file_id": file_id,
-                "paper_id": paper_id,
-                "filename": file.filename,
-                "storage_url": str(file_path),
-                "file_size": len(content),
-                "file_type": file_ext
-            }).execute()
-            
+            file_size = 0
+
+            # Stream to disk and enforce the limit while reading so oversized
+            # uploads cannot exhaust application memory.
+            try:
+                with open(file_path, "wb") as buffer:
+                    while True:
+                        chunk = await file.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        file_size += len(chunk)
+                        if file_size > settings.max_file_size:
+                            raise HTTPException(
+                                status_code=413,
+                                detail=f"File exceeds the {settings.max_file_size}-byte upload limit"
+                            )
+                        buffer.write(chunk)
+
+                # Store metadata only after the file has been written successfully.
+                supabase.table("files").insert({
+                    "file_id": file_id,
+                    "paper_id": paper_id,
+                    "filename": original_name,
+                    "storage_url": str(file_path),
+                    "file_size": file_size,
+                    "file_type": file_ext
+                }).execute()
+            except Exception:
+                file_path.unlink(missing_ok=True)
+                raise
+
             uploaded_files.append(FileUploadResponse(
                 file_id=file_id,
-                filename=file.filename,
+                filename=original_name,
                 storage_url=str(file_path),
-                file_size=len(content)
+                file_size=file_size
             ))
         
         # Process files asynchronously in background
@@ -220,6 +246,8 @@ async def upload_files(paper_id: str, files: List[UploadFile] = File(...)):
         asyncio.create_task(process_files_background(paper_id, uploaded_files))
         
         return uploaded_files
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -247,9 +275,15 @@ async def process_files_background(paper_id: str, uploaded_files: List[FileUploa
                         "chunk_index": i,
                         "metadata": {"source": file_info.filename}
                     }).execute()
+                except HTTPException:
+                    raise
                 except Exception as e:
                     print(f"Error processing chunk {i} for file {file_info.filename}: {e}")
                     continue
+                    
+    except HTTPException:
+                    
+        raise
                     
     except Exception as e:
         print(f"Background processing error: {e}")
@@ -269,6 +303,8 @@ async def create_section(paper_id: str, section: SectionCreate):
             return SectionResponse(**result.data[0])
         else:
             raise HTTPException(status_code=400, detail="Failed to create section")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -279,6 +315,8 @@ async def get_sections(paper_id: str):
         result = supabase.table("sections").select("*").eq("paper_id", paper_id).order("order_index").execute()
         
         return [SectionResponse(**section) for section in result.data]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -357,6 +395,10 @@ async def generate_content(request: GenerationRequest):
         else:
             raise HTTPException(status_code=400, detail="Failed to save generated content")
             
+    except HTTPException:
+            
+        raise
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -391,6 +433,10 @@ Keywords: {', '.join(paper['keywords'])}
         
         return {"paper": formatted_paper}
         
+    except HTTPException:
+        
+        raise
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -415,6 +461,10 @@ async def export_paper_latex(paper_id: str):
             "latex": latex_content,
             "filename": f"{paper['title'].replace(' ', '_')}.tex"
         }
+        
+    except HTTPException:
+        
+        raise
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -478,6 +528,10 @@ async def export_paper_pdf(paper_id: str):
             }
         )
         
+    except HTTPException:
+        
+        raise
+        
     except Exception as e:
         print(f"PDF export error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
@@ -511,6 +565,10 @@ async def resume_paper_generation(paper_id: str):
             "status": "resumed"
         }
         
+    except HTTPException:
+        
+        raise
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -537,6 +595,10 @@ async def generate_complete_paper(paper_id: str):
             "status": "started",
             "note": "Use the processing-status endpoint to check progress"
         }
+        
+    except HTTPException:
+        
+        raise
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -567,6 +629,10 @@ async def get_generation_status(paper_id: str):
             "background_task": task_status,
             "metadata": paper.get("metadata", {}) if "metadata" in paper else {}
         }
+        
+    except HTTPException:
+        
+        raise
         
     except Exception as e:
         return {
@@ -632,6 +698,10 @@ LaTeX compilation is working successfully.
                 "pdf_generated": os.path.exists(pdf_file)
             }
     
+    except HTTPException:
+    
+        raise
+    
     except Exception as e:
         raise HTTPException(
             status_code=500, 
@@ -692,6 +762,10 @@ If you can download this PDF, the system is working correctly.
             }
         )
     
+    except HTTPException:
+    
+        raise
+    
     except Exception as e:
         raise HTTPException(
             status_code=500, 
@@ -735,6 +809,10 @@ async def get_paper_metrics(paper_id: str):
                 "publication_ready": total_pages >= 8 and total_sections >= 6
             }
         }
+        
+    except HTTPException:
+        
+        raise
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -790,6 +868,10 @@ async def get_processing_status(paper_id: str):
             "generation_status": generation_status,
             "overall_status": paper_status
         }
+        
+    except HTTPException:
+        
+        raise
         
     except Exception as e:
         print(f"Processing status error: {str(e)}")
