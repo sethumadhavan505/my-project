@@ -8,6 +8,10 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load backend/.env for local startup; Docker injects the same values via env_file.
+load_dotenv()
 
 def check_requirements():
     """Check if all required packages are installed"""
