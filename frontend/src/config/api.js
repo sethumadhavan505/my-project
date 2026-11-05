@@ -93,13 +93,12 @@ export const apiService = {
     });
 
     const response = await api.post(endpoints.uploadFiles(paperId), formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
       timeout: 300000, // 5 minutes for file uploads
       onUploadProgress: (progressEvent) => {
-        const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-        console.log(`Upload progress: ${percentCompleted}%`);
+        if (progressEvent.total) {
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          console.log(`Upload progress: ${percentCompleted}%`);
+        }
       },
     });
     return response.data;

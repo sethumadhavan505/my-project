@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import BackgroundTasks, FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 import uvicorn
@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import List
 import google.genai as genai
 import tempfile
+import logging
+import re
+from datetime import datetime, timezone
 
 from models import (
     PaperCreate, PaperResponse, SectionCreate, SectionResponse,
@@ -22,6 +25,24 @@ from services.background_tasks import background_task_manager
 from config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+IEEE_SECTION_ORDER = [
+    "Abstract",
+    "Introduction",
+    "Related Work",
+    "Literature Review",
+    "Methodology",
+    "System Design",
+    "Implementation",
+    "Experimental Setup",
+    "Results",
+    "Evaluation",
+    "Discussion",
+    "Conclusion",
+    "Future Work",
+    "References",
+]
 
 # Initialize services with lazy loading
 _file_processor = None
@@ -77,7 +98,11 @@ async def startup_event():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=[
+        origin.strip()
+        for origin in settings.cors_origins.split(",")
+        if origin.strip()
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -104,17 +129,29 @@ async def root():
     }
 
 @app.get("/api/system/status")
-async def system_status():
-    """Get detailed system status including model readiness"""
+def system_status():
+    """Report application dependencies without turning database errors into success."""
+    try:
+        supabase.table("papers").select("paper_id").limit(1).execute()
+        database_status = "connected"
+    except Exception:
+        logger.exception("Supabase connectivity check failed")
+        database_status = "unavailable"
+
     return {
         "api_status": "running",
+        "database_status": database_status,
         "embedding_model_ready": _embedding_model_ready,
         "latex_available": latex_service.is_latex_available(),
-        "message": "Embedding model ready" if _embedding_model_ready else "Embedding model loading..."
+        "message": (
+            "Embedding model ready"
+            if _embedding_model_ready
+            else "Embedding model loading..."
+        ),
     }
 
 @app.get("/api/papers", response_model=List[PaperResponse])
-async def list_papers():
+def list_papers():
     """List all papers"""
     try:
         result = supabase.table("papers").select("*").order("created_at", desc=True).execute()
@@ -126,7 +163,7 @@ async def list_papers():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/papers", response_model=PaperResponse)
-async def create_paper(paper: PaperCreate):
+def create_paper(paper: PaperCreate):
     """Create a new paper"""
     try:
         result = supabase.table("papers").insert({
@@ -148,7 +185,7 @@ async def create_paper(paper: PaperCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/papers/{paper_id}", response_model=PaperResponse)
-async def get_paper(paper_id: str):
+def get_paper(paper_id: str):
     """Get paper by ID"""
     try:
         result = supabase.table("papers").select("*").eq("paper_id", paper_id).execute()
@@ -163,7 +200,7 @@ async def get_paper(paper_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/papers/{paper_id}/files", response_model=List[FileUploadResponse])
-async def get_files(paper_id: str):
+def get_files(paper_id: str):
     """Get all files for a paper"""
     try:
         result = supabase.table("files").select("*").eq("paper_id", paper_id).execute()
@@ -180,7 +217,11 @@ async def get_files(paper_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/papers/{paper_id}/upload", response_model=List[FileUploadResponse])
-async def upload_files(paper_id: str, files: List[UploadFile] = File(...)):
+async def upload_files(
+    paper_id: str,
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+):
     """Upload reference files for a paper"""
     try:
         paper_result = supabase.table("papers").select("paper_id").eq("paper_id", paper_id).execute()
@@ -229,7 +270,9 @@ async def upload_files(paper_id: str, files: List[UploadFile] = File(...)):
                     "filename": original_name,
                     "storage_url": str(file_path),
                     "file_size": file_size,
-                    "file_type": file_ext
+                    "file_type": file_ext,
+                    "processing_status": "pending",
+                    "processing_error": None,
                 }).execute()
             except Exception:
                 file_path.unlink(missing_ok=True)
@@ -242,9 +285,7 @@ async def upload_files(paper_id: str, files: List[UploadFile] = File(...)):
                 file_size=file_size
             ))
         
-        # Process files asynchronously in background
-        import asyncio
-        asyncio.create_task(process_files_background(paper_id, uploaded_files))
+        background_tasks.add_task(process_files_background, paper_id, uploaded_files)
         
         return uploaded_files
     except HTTPException:
@@ -252,45 +293,53 @@ async def upload_files(paper_id: str, files: List[UploadFile] = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-async def process_files_background(paper_id: str, uploaded_files: List[FileUploadResponse]):
-    """Process files in background to avoid timeout"""
-    try:
-        file_processor = get_file_processor()
-        
-        for file_info in uploaded_files:
-            # Process file and extract text
+def process_files_background(paper_id: str, uploaded_files: List[FileUploadResponse]):
+    """Extract and index each uploaded document, persisting its outcome."""
+    file_processor = get_file_processor()
+
+    for file_info in uploaded_files:
+        file_id = str(file_info.file_id)
+        try:
+            supabase.table("files").update({
+                "processing_status": "processing",
+                "processing_error": None,
+            }).eq("file_id", file_id).execute()
+
             file_path = file_info.storage_url
             file_ext = Path(file_info.filename).suffix.lower()
-            
-            text, chunks = FileProcessor.process_file(file_path, file_ext)
-            
-            # Store chunks with embeddings
-            for i, chunk in enumerate(chunks):
-                try:
-                    embedding = file_processor.generate_embeddings(chunk)
-                    supabase.table("document_chunks").insert({
-                        "file_id": file_info.file_id,
-                        "paper_id": paper_id,
-                        "content": chunk,
-                        "embedding": embedding,
-                        "chunk_index": i,
-                        "metadata": {"source": file_info.filename}
-                    }).execute()
-                except HTTPException:
-                    raise
-                except Exception as e:
-                    print(f"Error processing chunk {i} for file {file_info.filename}: {e}")
-                    continue
-                    
-    except HTTPException:
-                    
-        raise
-                    
-    except Exception as e:
-        print(f"Background processing error: {e}")
+            _, chunks = FileProcessor.process_file(file_path, file_ext)
+            embeddings = file_processor.generate_embeddings_batch(chunks)
+
+            rows = [
+                {
+                    "file_id": file_id,
+                    "paper_id": paper_id,
+                    "content": chunk,
+                    "embedding": embedding,
+                    "chunk_index": index,
+                    "metadata": {"source": file_info.filename},
+                }
+                for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))
+            ]
+            for start in range(0, len(rows), 100):
+                supabase.table("document_chunks").insert(rows[start:start + 100]).execute()
+
+            supabase.table("files").update({
+                "processing_status": "processed",
+                "processing_error": None,
+            }).eq("file_id", file_id).execute()
+        except Exception as error:
+            logger.exception("Document processing failed for file %s", file_id)
+            try:
+                supabase.table("files").update({
+                    "processing_status": "failed",
+                    "processing_error": str(error)[:1000],
+                }).eq("file_id", file_id).execute()
+            except Exception:
+                logger.exception("Could not save processing failure for file %s", file_id)
 
 @app.post("/api/papers/{paper_id}/sections", response_model=SectionResponse)
-async def create_section(paper_id: str, section: SectionCreate):
+def create_section(paper_id: str, section: SectionCreate):
     """Create a new section for a paper"""
     try:
         result = supabase.table("sections").insert({
@@ -310,7 +359,7 @@ async def create_section(paper_id: str, section: SectionCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/papers/{paper_id}/sections", response_model=List[SectionResponse])
-async def get_sections(paper_id: str):
+def get_sections(paper_id: str):
     """Get all sections for a paper"""
     try:
         result = supabase.table("sections").select("*").eq("paper_id", paper_id).order("order_index").execute()
@@ -322,7 +371,7 @@ async def get_sections(paper_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/generate", response_model=GenerationResponse)
-async def generate_content(request: GenerationRequest):
+def generate_content(request: GenerationRequest):
     """Generate comprehensive content for a specific section using RAG"""
     try:
         # Get paper info
@@ -367,11 +416,15 @@ async def generate_content(request: GenerationRequest):
             "paper_id": str(request.paper_id),
             "section_name": request.section_name,
             "content": generated_content,
-            "order_index": 0,  # Will be updated by user
+            "order_index": (
+                IEEE_SECTION_ORDER.index(request.section_name)
+                if request.section_name in IEEE_SECTION_ORDER
+                else len(IEEE_SECTION_ORDER)
+            ),
             "metadata": {
                 "word_count": metrics["words"],
                 "estimated_pages": metrics["estimated_pages"],
-                "generation_timestamp": "now()"
+                "generation_timestamp": datetime.now(timezone.utc).isoformat()
             }
         }
         
@@ -404,7 +457,7 @@ async def generate_content(request: GenerationRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/papers/{paper_id}/export")
-async def export_paper(paper_id: str):
+def export_paper(paper_id: str):
     """Export complete paper as formatted text"""
     try:
         # Get paper info
@@ -442,7 +495,7 @@ Keywords: {', '.join(paper['keywords'])}
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/papers/{paper_id}/export/latex")
-async def export_paper_latex(paper_id: str):
+def export_paper_latex(paper_id: str):
     """Export paper as IEEE-formatted LaTeX"""
     try:
         # Get paper info
@@ -471,7 +524,7 @@ async def export_paper_latex(paper_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/papers/{paper_id}/export/pdf")
-async def export_paper_pdf(paper_id: str):
+def export_paper_pdf(paper_id: str):
     """Export paper as IEEE-formatted PDF using LaTeX/MiKTeX"""
     try:
         # Check if LaTeX is available
@@ -517,7 +570,8 @@ async def export_paper_pdf(paper_id: str):
             pass  # Ignore cleanup errors
         
         # Return PDF content as response
-        filename = f"{paper['title'].replace(' ', '_').replace('/', '_')}.pdf"
+        filename = re.sub(r"[^A-Za-z0-9._-]+", "_", paper["title"]).strip("._")
+        filename = f"{filename or 'paper'}.pdf"
         
         from fastapi.responses import Response
         return Response(
@@ -538,7 +592,7 @@ async def export_paper_pdf(paper_id: str):
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
 
 @app.post("/api/papers/{paper_id}/resume-generation")
-async def resume_paper_generation(paper_id: str):
+def resume_paper_generation(paper_id: str):
     """Resume paper generation from where it left off"""
     try:
         # Get paper info
@@ -574,7 +628,7 @@ async def resume_paper_generation(paper_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/papers/{paper_id}/generate-complete")
-async def generate_complete_paper(paper_id: str):
+def generate_complete_paper(paper_id: str):
     """Start generating a complete comprehensive IEEE paper in the background"""
     try:
         # Test API connection first
@@ -605,7 +659,7 @@ async def generate_complete_paper(paper_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/papers/{paper_id}/generation-status")
-async def get_generation_status(paper_id: str):
+def get_generation_status(paper_id: str):
     """Get detailed generation status for a paper"""
     try:
         # Get paper status
@@ -636,20 +690,14 @@ async def get_generation_status(paper_id: str):
         raise
         
     except Exception as e:
-        return {
-            "paper_id": paper_id,
-            "error": str(e),
-            "paper_status": "unknown",
-            "sections_generated": 0,
-            "background_task": {"status": "not_found"},
-            "metadata": {}
-        }
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        logger.exception("Could not load generation status for paper %s", paper_id)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not load generation status from Supabase",
+        ) from e
 
 @app.get("/api/latex/status")
-async def latex_status():
+def latex_status():
     """Check LaTeX availability"""
     return {
         "latex_available": latex_service.is_latex_available(),
@@ -658,7 +706,7 @@ async def latex_status():
     }
 
 @app.get("/api/latex/test")
-async def test_latex():
+def test_latex():
     """Test LaTeX compilation with a simple document"""
     if not latex_service.is_latex_available():
         raise HTTPException(
@@ -710,7 +758,7 @@ LaTeX compilation is working successfully.
         )
 
 @app.get("/api/latex/test-pdf")
-async def test_pdf_download():
+def test_pdf_download():
     """Test PDF download with a simple document"""
     if not latex_service.is_latex_available():
         raise HTTPException(
@@ -774,7 +822,7 @@ If you can download this PDF, the system is working correctly.
         )
 
 @app.get("/api/papers/{paper_id}/metrics")
-async def get_paper_metrics(paper_id: str):
+def get_paper_metrics(paper_id: str):
     """Get comprehensive metrics for a paper"""
     try:
         # Get all sections for the paper
@@ -819,7 +867,7 @@ async def get_paper_metrics(paper_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/papers/{paper_id}/processing-status")
-async def get_processing_status(paper_id: str):
+def get_processing_status(paper_id: str):
     """Check file processing and paper generation status"""
     try:
         # Get paper info with current status
@@ -829,30 +877,50 @@ async def get_processing_status(paper_id: str):
         
         paper = paper_result.data[0]
         
-        # Get files for this paper
-        files_result = supabase.table("files").select("*").eq("paper_id", paper_id).execute()
-        
-        # Get chunks for this paper
-        chunks_result = supabase.table("document_chunks").select("file_id").eq("paper_id", paper_id).execute()
+        files_result = (
+            supabase.table("files")
+            .select("file_id,filename,processing_status,processing_error")
+            .eq("paper_id", paper_id)
+            .execute()
+        )
         
         # Get sections for this paper
         sections_result = supabase.table("sections").select("*").eq("paper_id", paper_id).execute()
         
         total_files = len(files_result.data)
-        processed_files = len(set(chunk["file_id"] for chunk in chunks_result.data))
+        processed_files = sum(
+            1 for file in files_result.data
+            if file.get("processing_status") == "processed"
+        )
+        failed_files = sum(
+            1 for file in files_result.data
+            if file.get("processing_status") == "failed"
+        )
+        finished_files = processed_files + failed_files
         total_sections = len(sections_result.data)
         
         # File processing status
         file_processing = {
             "total_files": total_files,
             "processed_files": processed_files,
-            "processing_complete": processed_files == total_files,
-            "progress_percentage": round((processed_files / max(total_files, 1)) * 100)
+            "failed_files": failed_files,
+            "errors": [
+                {
+                    "filename": file.get("filename"),
+                    "error": file.get("processing_error"),
+                }
+                for file in files_result.data
+                if file.get("processing_status") == "failed"
+            ],
+            "processing_complete": finished_files == total_files,
+            "progress_percentage": round(
+                (finished_files / max(total_files, 1)) * 100
+            ),
         }
         
         # Paper generation status (handle missing metadata column gracefully)
         paper_status = paper.get("status", "draft")
-        paper_metadata = paper.get("metadata", {}) if "metadata" in paper else {}
+        paper_metadata = paper.get("metadata") or {}
         
         generation_status = {
             "status": paper_status,
@@ -875,24 +943,12 @@ async def get_processing_status(paper_id: str):
         raise
         
     except Exception as e:
-        print(f"Processing status error: {str(e)}")
-        # Return basic status if there's an error
-        return {
-            "paper_id": paper_id,
-            "file_processing": {
-                "total_files": 0,
-                "processed_files": 0,
-                "processing_complete": True,
-                "progress_percentage": 100
-            },
-            "generation_status": {
-                "status": "unknown",
-                "sections_generated": 0,
-                "current_section": "",
-                "progress_percentage": 0,
-                "total_words": 0,
-                "estimated_pages": 0
-            },
-            "overall_status": "unknown",
-            "error": str(e)
-        }
+        logger.exception("Could not load processing status for paper %s", paper_id)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not load processing status from Supabase",
+        ) from e
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

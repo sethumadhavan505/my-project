@@ -594,8 +594,6 @@ class LaTeXService:
             author_info = {'name': author}
             if i < len(paper_data.get('affiliations', [])):
                 author_info['affiliation'] = paper_data['affiliations'][i]
-            # Generate realistic email for demo
-            author_info['email'] = f"{author.lower().replace(' ', '.')}@university.edu"
             authors.append(author_info)
         
         # Process sections with proper ordering
@@ -633,14 +631,7 @@ class LaTeXService:
             abstract = abstract_section['content']
             sections = [s for s in sections if s != abstract_section]
         
-        # Generate simple references
-        references = [
-            {"key": "ref1", "citation": "Smith, J. A., \"Advanced Methods in " + paper_data.get('domain', 'Technology') + ",\" IEEE Transactions on Technology, vol. 45, no. 3, pp. 123-135, 2023."},
-            {"key": "ref2", "citation": "Johnson, B. C., \"Recent Developments in " + paper_data.get('domain', 'Technology') + " Systems,\" Proceedings of IEEE Conference, pp. 456-467, 2022."},
-            {"key": "ref3", "citation": "Williams, C. D., \"Novel Approaches to " + paper_data.get('domain', 'Technology') + " Implementation,\" IEEE Journal of Selected Areas, vol. 12, no. 4, pp. 789-801, 2023."},
-            {"key": "ref4", "citation": "Brown, E. F., \"Comprehensive Analysis of " + paper_data.get('domain', 'Technology') + " Performance,\" International Conference on Technology, pp. 234-245, 2022."},
-            {"key": "ref5", "citation": "Davis, G. H., \"Future Trends in " + paper_data.get('domain', 'Technology') + " Research,\" IEEE Computer Society, vol. 28, no. 2, pp. 156-168, 2023."}
-        ]
+
         
         return self.ieee_generator.generate_ieee_paper(
             title=paper_data.get('title', ''),
@@ -648,7 +639,7 @@ class LaTeXService:
             sections=sections,
             abstract=abstract,
             keywords=paper_data.get('keywords', []),
-            references=references
+            references=None
         )
     
     def compile_to_pdf(self, latex_content: str, output_dir: str = None) -> tuple[str, str]:

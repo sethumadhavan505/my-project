@@ -5,6 +5,7 @@ Background task service for long-running operations
 import asyncio
 import threading
 from typing import Dict, Any, Optional
+from datetime import datetime, timezone
 from services.content_generator import ComprehensiveContentGenerator
 from services.file_processor import FileProcessor
 from database import supabase
@@ -106,7 +107,10 @@ class BackgroundTaskManager:
             
             # Check which sections already exist
             existing_sections_result = supabase.table("sections").select("section_name").eq("paper_id", paper_id).execute()
-            existing_sections = set(section["section_name"] for section in existing_sections_result.data)
+            existing_sections = {
+                section["section_name"]
+                for section in existing_sections_result.data
+            }
             
             print(f"Background: Found {len(existing_sections)} existing sections: {existing_sections}")
             
@@ -201,7 +205,7 @@ class BackgroundTaskManager:
                                 section_data["metadata"] = {
                                     "word_count": metrics["words"],
                                     "estimated_pages": metrics["estimated_pages"],
-                                    "generation_timestamp": "now()"
+                                    "generation_timestamp": datetime.now(timezone.utc).isoformat()
                                 }
                                 section_result = supabase.table("sections").insert(section_data).execute()
                             except Exception as db_error:
@@ -228,7 +232,20 @@ class BackgroundTaskManager:
                     print(f"Background: ❌ Error generating batch {section_batch}: {str(e)}")
                     continue
             
-            # Complete the task
+            completed_section_names = existing_sections | {
+                section["section_name"] for section in generated_sections
+            }
+            missing_sections = [
+                section for section in comprehensive_sections
+                if section not in completed_section_names
+            ]
+            if missing_sections:
+                raise RuntimeError(
+                    "Paper generation was incomplete; sections not saved: "
+                    + ", ".join(missing_sections)
+                )
+
+            # Complete the task only after every requested section is saved.
             total_pages = total_words / 250
             final_status = {
                 "completed_sections": len(generated_sections),

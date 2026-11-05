@@ -80,7 +80,7 @@ const PaperWizard = ({ onBack, existingPaper }) => {
           // Load processing status
           if (files.length > 0) {
             const status = await apiService.getProcessingStatus(existingPaper.paper_id)
-            setProcessingStatus(status)
+            setProcessingStatus(status.file_processing)
           }
           
           // Determine which step to start at
@@ -186,13 +186,14 @@ const PaperWizard = ({ onBack, existingPaper }) => {
     const checkStatus = async () => {
       try {
         const status = await apiService.getProcessingStatus(paperIdToCheck)
-        setProcessingStatus(status)
+        setProcessingStatus(status.file_processing)
         
         if (!status.processing_complete) {
           setTimeout(checkStatus, 2000) // Check every 2 seconds
         }
       } catch (error) {
         console.error('Error checking processing status:', error)
+        setError(`Could not check file processing status: ${error.message}`)
       }
     }
     
@@ -706,7 +707,8 @@ const PaperWizard = ({ onBack, existingPaper }) => {
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-blue-300 font-medium">Processing Files</span>
                           <span className="text-blue-200 text-sm">
-                            {processingStatus.processed_files}/{processingStatus.total_files} files
+                            {processingStatus.processed_files}/{processingStatus.total_files} processed
+                            {processingStatus.failed_files > 0 && `, ${processingStatus.failed_files} failed`}
                           </span>
                         </div>
                         <div className="w-full bg-blue-900/30 rounded-full h-2">
@@ -716,11 +718,18 @@ const PaperWizard = ({ onBack, existingPaper }) => {
                           ></div>
                         </div>
                         <p className="text-blue-200 text-xs mt-2">
-                          {processingStatus.processing_complete 
-                            ? "✅ All files processed and ready for generation"
+                          {processingStatus.processing_complete
+                            ? processingStatus.failed_files > 0
+                              ? "⚠️ Processing finished with errors. Re-upload failed files after reviewing the error details."
+                              : "✅ All files processed and ready for generation"
                             : "🔄 Processing files in background..."
                           }
                         </p>
+                        {processingStatus.errors?.map((item) => (
+                          <p key={item.filename} className="text-red-200 text-xs mt-1">
+                            {item.filename}: {item.error}
+                          </p>
+                        ))}
                       </div>
                     )}
                   </div>
