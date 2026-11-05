@@ -3,12 +3,16 @@ from functools import lru_cache
 import os
 
 class Settings(BaseSettings):
-    # Supabase (can be local PostgreSQL or external Supabase)
+    # Supabase REST API (not a PostgreSQL connection string)
     supabase_url: str
     supabase_key: str
     
     # Gemini API (for text generation only)
     gemini_api_key: str
+    gemini_model: str = "gemini-3.6-flash"
+
+    # Comma-separated browser origins allowed to call the API.
+    cors_origins: str = "http://localhost:3000,http://localhost:5173"
     
     # Embedding model settings
     embedding_model: str = "all-MiniLM-L6-v2"

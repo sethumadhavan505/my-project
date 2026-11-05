@@ -35,8 +35,16 @@ CREATE TABLE IF NOT EXISTS files (
     storage_url TEXT NOT NULL,
     file_size INTEGER,
     file_type TEXT,
+    processing_status TEXT NOT NULL DEFAULT 'pending',
+    processing_error TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Additive migration for databases created with an earlier version of this schema.
+ALTER TABLE files
+    ADD COLUMN IF NOT EXISTS processing_status TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE files
+    ADD COLUMN IF NOT EXISTS processing_error TEXT;
 
 -- Document chunks table (for RAG)
 CREATE TABLE IF NOT EXISTS document_chunks (

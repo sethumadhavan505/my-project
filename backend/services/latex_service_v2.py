@@ -27,29 +27,11 @@ class IEEELaTeXGenerator:
 \usepackage{textcomp}
 \usepackage{xcolor}
 \usepackage{balance}
-\usepackage{titlesec}
 
 % Prevent text overflow
 \sloppy
 \hyphenpenalty=5000
 \tolerance=1000
-
-% Enhanced section formatting - bigger and bolder
-\titleformat{\section}
-  {\normalfont\fontsize{11}{13}\bfseries\scshape}
-  {\thesection.}
-  {0.5em}
-  {}
-
-\titleformat{\subsection}
-  {\normalfont\fontsize{10.5}{12}\bfseries}
-  {\thesubsection}
-  {0.5em}
-  {}
-
-% Add more spacing around sections
-\titlespacing*{\section}{0pt}{12pt plus 2pt minus 2pt}{8pt plus 2pt minus 2pt}
-\titlespacing*{\subsection}{0pt}{10pt plus 2pt minus 2pt}{6pt plus 2pt minus 2pt}
 
 % Title
 \title{<<TITLE>>}
@@ -86,7 +68,7 @@ class IEEELaTeXGenerator:
         # Group authors by affiliation
         affiliation_groups = {}
         for author in authors:
-            aff = author.get('affiliation', 'Unknown Institution')
+            aff = author.get('affiliation', '')
             if aff not in affiliation_groups:
                 affiliation_groups[aff] = []
             affiliation_groups[aff].append(author)
@@ -100,14 +82,21 @@ class IEEELaTeXGenerator:
             aff = list(affiliation_groups.keys())[0]
             author_names = [a['name'] for a in authors]
             
-            author_lines.append(r"\IEEEauthorblockN{" + ", ".join(author_names) + "}")
-            author_lines.append(r"\IEEEauthorblockA{" + aff + r"\\")
-            
-            # Add emails
-            emails = [f"{a['name']}: {a.get('email', '')}" for a in authors if a.get('email')]
+            author_lines.append(
+                r"\IEEEauthorblockN{"
+                + ", ".join(self.clean_text_for_latex(name) for name in author_names)
+                + "}"
+            )
+            details = [self.clean_text_for_latex(aff)] if aff else []
+            emails = [a.get('email', '').strip() for a in authors if a.get('email')]
             if emails:
-                author_lines.append(r"Email: " + ", ".join([a.get('email', '') for a in authors if a.get('email')]))
-            author_lines.append("}")
+                details.append(
+                    "Email: " + ", ".join(self.clean_text_for_latex(email) for email in emails)
+                )
+            if details:
+                author_lines.append(
+                    r"\IEEEauthorblockA{" + r"\\".join(details) + "}"
+                )
         else:
             # Multiple affiliations
             for i, (aff, auth_list) in enumerate(affiliation_groups.items()):
@@ -115,13 +104,21 @@ class IEEELaTeXGenerator:
                     author_lines.append(r"\and")
                 
                 author_names = [a['name'] for a in auth_list]
-                author_lines.append(r"\IEEEauthorblockN{" + ", ".join(author_names) + "}")
-                author_lines.append(r"\IEEEauthorblockA{" + aff + r"\\")
-                
-                emails = [a.get('email', '') for a in auth_list if a.get('email')]
+                author_lines.append(
+                    r"\IEEEauthorblockN{"
+                    + ", ".join(self.clean_text_for_latex(name) for name in author_names)
+                    + "}"
+                )
+                details = [self.clean_text_for_latex(aff)] if aff else []
+                emails = [a.get('email', '').strip() for a in auth_list if a.get('email')]
                 if emails:
-                    author_lines.append(r"Email: " + ", ".join(emails))
-                author_lines.append("}")
+                    details.append(
+                        "Email: " + ", ".join(self.clean_text_for_latex(email) for email in emails)
+                    )
+                if details:
+                    author_lines.append(
+                        r"\IEEEauthorblockA{" + r"\\".join(details) + "}"
+                    )
         
         author_lines.append("}")
         return "\n".join(author_lines)
@@ -601,8 +598,6 @@ class LaTeXService:
             elif len(paper_affiliations) == 1:
                 author_info['affiliation'] = paper_affiliations[0].strip()
             
-            email_name = author.lower().replace(' ', '.').replace('-', '.')
-            author_info['email'] = f"{email_name}@university.edu"
             authors.append(author_info)
         
         # Process sections
@@ -625,21 +620,13 @@ class LaTeXService:
         if isinstance(keywords, str):
             keywords = [k.strip() for k in keywords.split(',')]
         
-        # Generate references
-        domain = paper_data.get('domain', 'Technology')
-        references = [
-            {"citation": f"Smith, J. A., ``Advanced Methods in {domain},'' IEEE Transactions, vol. 45, no. 3, pp. 123-135, 2023."},
-            {"citation": f"Johnson, B. C., ``Recent Developments in {domain},'' IEEE Conference, pp. 456-467, 2022."},
-            {"citation": f"Williams, C. D., ``Novel Approaches to {domain},'' IEEE Journal, vol. 12, no. 4, pp. 789-801, 2023."},
-        ]
-        
         return self.generator.generate_ieee_paper(
             title=paper_data.get('title', ''),
             authors=authors,
             sections=sections,
             abstract=abstract,
             keywords=keywords,
-            references=references
+            references=None
         )
     
     def compile_to_pdf(self, latex_content: str, output_dir: str = None) -> tuple[str, str]:

@@ -15,5 +15,3 @@ sentence-transformers
 torch
 numpy
 jinja2
-pdflatex
-

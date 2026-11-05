@@ -11,8 +11,16 @@ class ComprehensiveContentGenerator:
     
     def __init__(self):
         self.client = genai.Client(api_key=settings.gemini_api_key)
-        self.model = 'gemini-3-flash-preview'  # Using the latest model
-        print("✅ Initialized ContentGenerator with gemini-3-flash-preview")
+        self.model = settings.gemini_model
+        print(f"Initialized ContentGenerator with model {self.model}")
+
+    @staticmethod
+    def _response_text(response) -> str:
+        """Return generated text or raise for blocked/empty Gemini responses."""
+        text = getattr(response, "text", None)
+        if not isinstance(text, str) or not text.strip():
+            raise RuntimeError("Gemini returned an empty response.")
+        return text.strip()
     
     def test_api_connection(self) -> bool:
         """Test if API is working and has quota available"""
@@ -141,10 +149,10 @@ CONTEXT FROM REFERENCE PAPERS:
 WRITING GUIDELINES:
 1. COMPREHENSIVE CONTENT: Write detailed, substantial content that meets the target length
 2. TECHNICAL DEPTH: Include technical details, algorithms, mathematical formulations where appropriate
-3. IEEE STANDARDS: Follow IEEE formatting and citation style ([1], [2], etc.)
+3. IEEE STANDARDS: Use numbered citations only for sources present in the supplied context.
 4. ACADEMIC RIGOR: Use formal academic language with proper terminology
 5. LOGICAL FLOW: Ensure smooth transitions and logical progression
-6. EVIDENCE-BASED: Support claims with evidence from context or established knowledge
+6. EVIDENCE-BASED: Do not invent references, experimental results, datasets, or quantitative claims. If the context does not provide evidence, state the limitation and describe what evidence is needed.
 7. ORIGINAL INSIGHTS: Provide novel insights and analysis beyond just summarizing
 8. PUBLICATION QUALITY: Write at the level expected for top-tier IEEE venues
 
@@ -156,7 +164,7 @@ SPECIFIC INSTRUCTIONS FOR {section_name}:
             "Abstract": """
 - Write a complete abstract that summarizes the entire paper
 - Include: problem statement, proposed approach, key results, main contributions
-- Use quantitative results where possible (e.g., "achieved 95% accuracy")
+- Include quantitative results only when they are provided in the supplied context
 - Make it standalone - readable without the rest of the paper
 - No citations in abstract
 """,
@@ -257,7 +265,7 @@ PAPER INFORMATION:
 - Keywords: {', '.join(paper_info.get('keywords', []))}
 
 CONTEXT FROM REFERENCE PAPERS:
-{context[:2000]}...
+{context[:10000]}
 
 TASK: Generate content for the following sections in a single response. 
 Separate each section with "=== SECTION: [Section Name] ===" markers.
@@ -267,10 +275,10 @@ SECTIONS TO GENERATE:
 
 WRITING GUIDELINES:
 1. CONCISE CONTENT: Keep within the specified word limits for each section
-2. IEEE STANDARDS: Follow IEEE formatting and citation style
+2. IEEE STANDARDS: Cite only sources present in the supplied context; never invent citations
 3. ACADEMIC RIGOR: Use formal academic language
 4. LOGICAL FLOW: Ensure smooth transitions within each section
-5. EVIDENCE-BASED: Support claims with evidence from context
+5. EVIDENCE-BASED: Do not invent references, experimental results, datasets, or quantitative claims; describe missing evidence as a limitation
 6. PUBLICATION QUALITY: Write at the level expected for IEEE venues
 
 IMPORTANT: 
@@ -293,17 +301,17 @@ Generate the sections now:
                     model=self.model,
                     contents=prompt,
                     config=genai.GenerateContentConfig(
-                        max_output_tokens=4000,  # Reduced for multiple sections
+                        max_output_tokens=settings.max_tokens,
                         temperature=settings.temperature,
                     )
                 )
                 
-                content = response.text
+                content = self._response_text(response)
                 
                 # Parse the response to extract individual sections
                 sections = self._parse_multiple_sections(content, section_names)
                 
-                return sections
+                break
                 
             except Exception as e:
                 error_msg = str(e)
@@ -320,7 +328,20 @@ Generate the sections now:
                 if attempt == max_retries - 1:
                     raise Exception(f"Multi-section generation failed after {max_retries} attempts: {error_msg}")
         
-        raise Exception(f"Multi-section generation failed for {section_names}")
+        else:
+            raise Exception(f"Multi-section generation failed for {section_names}")
+
+        # A truncated batch must not silently omit requested sections.
+        for section_name in section_names:
+            if not sections.get(section_name):
+                sections[section_name] = self.generate_section_content(
+                    section_name=section_name,
+                    paper_title=paper_title,
+                    domain=domain,
+                    context=context,
+                    paper_info=paper_info,
+                )
+        return sections
     
     def _parse_multiple_sections(self, content: str, section_names: List[str]) -> Dict[str, str]:
         """Parse the multi-section response into individual sections"""
@@ -382,12 +403,12 @@ Generate the sections now:
                     model=self.model,
                     contents=prompt,
                     config=genai.GenerateContentConfig(
-                        max_output_tokens=2000,  # Reduced from settings.max_tokens
+                        max_output_tokens=settings.max_tokens,
                         temperature=settings.temperature,
                     )
                 )
                 
-                content = response.text
+                content = self._response_text(response)
                 
                 # Post-process content
                 content = self.post_process_content(content, section_name)
@@ -452,22 +473,20 @@ Generate the sections now:
         }
     
     def generate_references(self, context: str, domain: str) -> List[Dict[str, str]]:
-        """Generate realistic references based on context and domain"""
+        """Extract references from context without fabricating citations."""
+        if not context.strip():
+            return []
         
         prompt = f"""
-Generate 15-20 realistic academic references for a {domain} research paper. 
-Based on this context: {context[:1000]}...
+Extract only bibliographic references that are explicitly present in this source text for a {domain} paper.
+Do not invent, complete, or infer any citation. Return an empty response if no references are present.
+Source text:
+{context[:10000]}
 
 Format each reference as:
 [1] Author, A. B., "Title of Paper," Journal/Conference Name, vol. X, no. Y, pp. Z-W, Year.
 
-Include a mix of:
-- Recent papers (2020-2024)
-- Foundational papers (2015-2019)
-- Key journals and conferences in {domain}
-- Realistic author names and titles
-
-Generate the references:
+Return only citations found in the source text:
 """
         
         try:
@@ -480,7 +499,7 @@ Generate the references:
                 )
             )
             
-            references_text = response.text
+            references_text = self._response_text(response)
             
             # Parse references
             references = []
@@ -501,9 +520,5 @@ Generate the references:
             
             return references[:20]  # Limit to 20 references
             
-        except Exception as e:
-            # Fallback references
-            return [
-                {"key": "ref1", "citation": "Smith, J. A., \"Advanced Methods in " + domain + ",\" IEEE Transactions on Technology, vol. 45, no. 3, pp. 123-135, 2023."},
-                {"key": "ref2", "citation": "Johnson, B. C., \"Recent Developments in " + domain + " Systems,\" Proceedings of IEEE Conference, pp. 456-467, 2022."}
-            ]
+        except Exception as error:
+            raise RuntimeError("Reference extraction failed.") from error

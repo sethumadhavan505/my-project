@@ -44,7 +44,7 @@ class FileProcessor:
             with open(file_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
                 for page in pdf_reader.pages:
-                    text += page.extract_text() + "\n"
+                    text += (page.extract_text() or "") + "\n"
         except Exception as e:
             raise Exception(f"Error extracting text from PDF: {str(e)}")
         return text
@@ -57,6 +57,9 @@ class FileProcessor:
             doc = Document(file_path)
             for paragraph in doc.paragraphs:
                 text += paragraph.text + "\n"
+            for table in doc.tables:
+                for row in table.rows:
+                    text += " ".join(cell.text for cell in row.cells) + "\n"
         except Exception as e:
             raise Exception(f"Error extracting text from DOCX: {str(e)}")
         return text
@@ -85,6 +88,18 @@ class FileProcessor:
             return embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
         except Exception as e:
             raise Exception(f"Error generating embeddings: {str(e)}")
+
+    def generate_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings in batches to reduce model overhead."""
+        try:
+            embeddings = self.embedding_model.encode(
+                texts,
+                convert_to_tensor=False,
+                show_progress_bar=False,
+            )
+            return [embedding.tolist() for embedding in embeddings]
+        except Exception as e:
+            raise Exception(f"Error generating embeddings: {str(e)}")
     
     @classmethod
     def process_file(cls, file_path: str, file_type: str) -> Tuple[str, List[str]]:
@@ -96,5 +111,8 @@ class FileProcessor:
         else:
             raise ValueError(f"Unsupported file type: {file_type}")
         
+        if not text.strip():
+            raise ValueError("No readable text was found in the uploaded document.")
+
         chunks = cls.chunk_text(text)
         return text, chunks

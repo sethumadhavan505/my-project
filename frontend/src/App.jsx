@@ -26,21 +26,13 @@ function App() {
         const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/`)
         
         if (response.ok) {
-          setConnectionStatus('connected')
-          console.log('✅ Backend connected')
-          
-          // Check embedding model status in background (non-blocking)
-          fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/api/system/status`)
-            .then(res => res.json())
-            .then(data => {
-              if (data.embedding_model_ready) {
-                setEmbeddingModelReady(true)
-                console.log('✅ Embedding model is ready!')
-              }
-            })
-            .catch(() => {
-              // Silently fail, will poll later
-            })
+          const statusResponse = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/api/system/status`)
+          if (!statusResponse.ok) {
+            throw new Error('Backend dependency check failed')
+          }
+          const status = await statusResponse.json()
+          setConnectionStatus(status.database_status === 'connected' ? 'connected' : 'disconnected')
+          setEmbeddingModelReady(Boolean(status.embedding_model_ready))
         } else {
           setConnectionStatus('disconnected')
         }
@@ -61,11 +53,14 @@ function App() {
       if (!embeddingModelReady) {
         try {
           const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/api/system/status`)
-          const data = await response.json()
-          if (data.embedding_model_ready) {
-            setEmbeddingModelReady(true)
-            console.log('✅ Embedding model is now ready!')
-            clearInterval(pollInterval)
+          if (response.ok) {
+            const data = await response.json()
+            setConnectionStatus(data.database_status === 'connected' ? 'connected' : 'disconnected')
+            if (data.embedding_model_ready) {
+              setEmbeddingModelReady(true)
+              console.log('✅ Embedding model is now ready!')
+              clearInterval(pollInterval)
+            }
           }
         } catch (error) {
           // Silently fail, will retry

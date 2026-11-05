@@ -418,9 +418,6 @@ class PDFService:
                 # If only one affiliation, use it for all authors
                 author_info['affiliation'] = paper_affiliations[0].strip()
             
-            # Generate realistic email
-            email_name = author.lower().replace(' ', '.').replace('-', '.')
-            author_info['email'] = f"{email_name}@university.edu"
             authors.append(author_info)
         
         # Process sections with proper ordering
@@ -463,23 +460,13 @@ class PDFService:
         if isinstance(keywords, str):
             keywords = [kw.strip() for kw in keywords.split(',')]
         
-        # Generate simple references
-        domain = paper_data.get('domain', 'Technology')
-        references = [
-            {"key": "ref1", "citation": f"Smith, J. A., \"Advanced Methods in {domain},\" IEEE Transactions on Technology, vol. 45, no. 3, pp. 123-135, 2023."},
-            {"key": "ref2", "citation": f"Johnson, B. C., \"Recent Developments in {domain} Systems,\" Proceedings of IEEE Conference, pp. 456-467, 2022."},
-            {"key": "ref3", "citation": f"Williams, C. D., \"Novel Approaches to {domain} Implementation,\" IEEE Journal of Selected Areas, vol. 12, no. 4, pp. 789-801, 2023."},
-            {"key": "ref4", "citation": f"Brown, E. F., \"Comprehensive Analysis of {domain} Performance,\" International Conference on Technology, pp. 234-245, 2022."},
-            {"key": "ref5", "citation": f"Davis, G. H., \"Future Trends in {domain} Research,\" IEEE Computer Society, vol. 28, no. 2, pp. 156-168, 2023."}
-        ]
-        
         return self.pdf_generator.generate_ieee_paper(
             title=paper_data.get('title', ''),
             authors=authors,
             sections=sections,
             abstract=abstract,
             keywords=keywords,
-            references=references
+            references=None
         )
     
     def compile_to_pdf(self, story: List, output_dir: str = None) -> tuple[str, str]:
